@@ -31,6 +31,120 @@ struct Serialmessage{
     uint16_t crc;
 };
 
+void handleSerialPortError(const std::string& message) {
+    std::cerr << message << std::endl;
+}
+
+void handleOpenError(HANDLE serialPort) {
+    if(serialPort == INVALID_HANDLE_VALUE){
+        handleSerialPortError("Error Opening to serial port");
+        CloseHandle(serialPort);
+        exit(1);
+    }
+    else{
+        handleSerialPortError("Opening serial port successful");
+    }
+}
+
+void handleWriteError(HANDLE serialPort, std::vector<uint8_t> message, DWORD bytes_written) {
+    if(!WriteFile(serialPort, message.data(), message.size(), &bytes_written, NULL)){
+        handleSerialPortError("Error Writing to serial port");
+        CloseHandle(serialPort);
+        exit(1);
+    }
+    else{
+        handleSerialPortError("Writing to serial port has succeeded");
+        std::cout << "Bytes written to serial port: " << bytes_written << std::endl;
+        std::cout << "written data : ";
+        for (DWORD i = 0; i < bytes_written; ++i) {
+            std::cout << std::hex << static_cast<int>(message[i]) << " ";
+        }
+        std::cout << std::dec << std::endl;
+    }
+}
+
+uint32_t handleReadError(HANDLE serialPort, std::vector<uint8_t> message, DWORD total_bytes_read, DWORD bytes_read, uint32_t target) {
+    while (total_bytes_read < message.size()) {
+        if (!ReadFile(serialPort, message.data() + total_bytes_read, message.size() - total_bytes_read, &bytes_read, NULL)) {
+            DWORD error = GetLastError();
+            std::cerr << "ReadFile failed with error " << error << std::endl;
+            CloseHandle(serialPort);
+            exit(1);
+        }
+        else{
+            total_bytes_read += bytes_read;
+        }
+    }
+    if (total_bytes_read == message.size()) {
+        std::cout << "Bytes read from serial port: " << total_bytes_read << std::endl;
+        target = (static_cast<uint16_t>(message[10]) << 24) | (static_cast<uint16_t>(message[9]) << 16) | (static_cast<uint16_t>(message[8]) << 8) | static_cast<uint16_t>(message[7]);
+        std::cout << "Received data: ";
+        for (DWORD i = 0; i < total_bytes_read; ++i) {
+            std::cout << std::hex << static_cast<int>(message[i]) << " ";
+        }
+        std::cout << std::dec << std::endl;
+    }
+    else {
+        handleSerialPortError("Failed to read complete message");
+    }
+    return target;
+}
+
+void handleTimeoutsError(HANDLE serialPort, COMMTIMEOUTS timeouts) {
+    if (!SetCommTimeouts(serialPort, &timeouts)) {
+        handleSerialPortError("Error setting timeouts");
+        CloseHandle(serialPort);
+        exit(1);
+    }
+    else;
+}
+
+void handleCommStateError(HANDLE serialPort, DCB dcbSerialParams) {
+    if(!GetCommState(serialPort, &dcbSerialParams)){
+        handleSerialPortError("Error getting serial port state");
+        CloseHandle(serialPort);
+        exit(1);
+    }
+    else;
+}
+
+void handleSetCommStateError(HANDLE serialPort, DCB dcbSerialParams) {
+    if (!SetCommState(serialPort, &dcbSerialParams)) {
+        handleSerialPortError("Error setting serial port state");
+        CloseHandle(serialPort);
+        exit(1);
+    }
+    else;
+}
+
+uint32_t SerialCommu(LPCWSTR port_name, DCB dcbSerialParams, COMMTIMEOUTS timeouts, std::vector<uint8_t> message) {
+    uint32_t target = 0x00000000;
+
+    HANDLE serialPort = CreateFileW(port_name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
+    dcbSerialParams.BaudRate = CBR_115200;
+    dcbSerialParams.ByteSize = 8;
+    dcbSerialParams.StopBits = ONESTOPBIT;
+    dcbSerialParams.Parity = NOPARITY;
+    timeouts.ReadIntervalTimeout = 50;
+    timeouts.ReadTotalTimeoutConstant = 50;
+    timeouts.ReadTotalTimeoutMultiplier = 10;
+    timeouts.WriteTotalTimeoutConstant = 50;
+    timeouts.WriteTotalTimeoutMultiplier = 10;
+    DWORD bytes_written = 0, bytes_read = 0;
+    DWORD total_bytes_read = 0;
+
+    handleOpenError(serialPort);
+    handleCommStateError(serialPort, dcbSerialParams);
+    handleSetCommStateError(serialPort, dcbSerialParams);
+    handleTimeoutsError(serialPort, timeouts);
+    handleWriteError(serialPort, message, bytes_written);
+    PurgeComm(serialPort, PURGE_RXCLEAR);
+    target = handleReadError(serialPort, message, total_bytes_read, bytes_read, target);
+    CloseHandle(serialPort);
+    
+    return target;
+}
 
 uint32_t SetAccel(uint8_t function_idx) {
     Serialmessage s_message;
@@ -64,75 +178,10 @@ uint32_t SetAccel(uint8_t function_idx) {
     message.push_back((crc >> 8) & 0xFF);
 
     // Send data to COM port
-    HANDLE serialPort;
     DCB dcbSerialParams = { 0 };
     COMMTIMEOUTS timeouts = { 0 };
     LPCWSTR port_name = L"\\\\.\\COM34";
-    serialPort = CreateFileW(port_name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (serialPort == INVALID_HANDLE_VALUE) {
-        std::cerr << "Error in opening serial port" << std::endl;
-    } else {
-        std::cout << "Opening serial port successful" << std::endl;
-
-        dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
-        if (!GetCommState(serialPort, &dcbSerialParams)) {
-            std::cerr << "Error getting serial port state" << std::endl;
-        } else {
-            dcbSerialParams.BaudRate = CBR_115200;
-            dcbSerialParams.ByteSize = 8;
-            dcbSerialParams.StopBits = ONESTOPBIT;
-            dcbSerialParams.Parity = NOPARITY;
-            if (!SetCommState(serialPort, &dcbSerialParams)) {
-                std::cerr << "Error setting serial port state" << std::endl;
-            } else {
-                timeouts.ReadIntervalTimeout = 50;
-                timeouts.ReadTotalTimeoutConstant = 50;
-                timeouts.ReadTotalTimeoutMultiplier = 10;
-                timeouts.WriteTotalTimeoutConstant = 50;
-                timeouts.WriteTotalTimeoutMultiplier = 10;
-                if (!SetCommTimeouts(serialPort, &timeouts)) {
-                    std::cerr << "Error setting timeouts" << std::endl;
-                } else {
-                    DWORD bytes_written, bytes_read;
-                    if (!WriteFile(serialPort, message.data(), message.size(), &bytes_written, NULL)) {
-                        std::cerr << "Error writing to serial port" << std::endl;
-                    } else {
-                        std::cout << "Bytes written to serial port: " << bytes_written << std::endl;
-                        std::cout << "written data : ";
-                        for (DWORD i = 0; i < bytes_written; ++i) {
-                            std::cout << std::hex << static_cast<int>(message[i]) << " ";
-                        }
-                        std::cout << std::dec << std::endl;
-                        
-                        PurgeComm(serialPort, PURGE_RXCLEAR);
-                        
-                        DWORD total_bytes_read = 0;
-                        while (total_bytes_read < message.size()) {
-                            if (!ReadFile(serialPort, message.data() + total_bytes_read, message.size() - total_bytes_read, &bytes_read, NULL)) {
-                                DWORD error = GetLastError();
-                                std::cerr << "ReadFile failed with error " << error << std::endl;
-                                break;
-                            }
-                            total_bytes_read += bytes_read;
-                        }
-
-                        if (total_bytes_read == message.size()) {
-                            std::cout << "Bytes read from serial port: " << total_bytes_read << std::endl;
-                            Accel = (static_cast<uint16_t>(message[10]) << 24) | (static_cast<uint16_t>(message[9]) << 16) | (static_cast<uint16_t>(message[8]) << 8) | static_cast<uint16_t>(message[7]);
-                            std::cout << "Received data: ";
-                            for (DWORD i = 0; i < total_bytes_read; ++i) {
-                                std::cout << std::hex << static_cast<int>(message[i]) << " ";
-                            }
-                            std::cout << std::dec << std::endl;
-                        } else {
-                            std::cerr << "Failed to read complete message" << std::endl;
-                        }
-                    }
-                }
-            }
-        }
-        CloseHandle(serialPort);
-    }
+    Accel = SerialCommu(port_name, dcbSerialParams, timeouts, message);
     return Accel;
 }
 
@@ -171,66 +220,7 @@ uint16_t ReadAccel(uint8_t function_idx) {
     DCB dcbSerialParams = { 0 };
     COMMTIMEOUTS timeouts = { 0 };
     LPCWSTR port_name = L"\\\\.\\COM34";
-    serialPort = CreateFileW(port_name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (serialPort == INVALID_HANDLE_VALUE) {
-        std::cerr << "Error in opening serial port" << std::endl;
-    } else {
-        std::cout << "Opening serial port successful" << std::endl;
-
-        dcbSerialParams.DCBlength = sizeof(dcbSerialParams);
-        if (!GetCommState(serialPort, &dcbSerialParams)) {
-            std::cerr << "Error getting serial port state" << std::endl;
-        } else {
-            dcbSerialParams.BaudRate = CBR_115200;
-            dcbSerialParams.ByteSize = 8;
-            dcbSerialParams.StopBits = ONESTOPBIT;
-            dcbSerialParams.Parity = NOPARITY;
-            if (!SetCommState(serialPort, &dcbSerialParams)) {
-                std::cerr << "Error setting serial port state" << std::endl;
-            } else {
-                timeouts.ReadIntervalTimeout = 50;
-                timeouts.ReadTotalTimeoutConstant = 50;
-                timeouts.ReadTotalTimeoutMultiplier = 10;
-                timeouts.WriteTotalTimeoutConstant = 50;
-                timeouts.WriteTotalTimeoutMultiplier = 10;
-                if (!SetCommTimeouts(serialPort, &timeouts)) {
-                    std::cerr << "Error setting timeouts" << std::endl;
-                } else {
-                    DWORD bytes_written, bytes_read;
-                    if (!WriteFile(serialPort, message.data(), message.size(), &bytes_written, NULL)) {
-                        std::cerr << "Error writing to serial port" << std::endl;
-                    } else {
-                        std::cout << "Bytes written to serial port: " << bytes_written << std::endl;
-                        
-                        PurgeComm(serialPort, PURGE_RXCLEAR);
-                        
-                        DWORD total_bytes_read = 0;
-                        while (total_bytes_read < message.size()) {
-                            if (!ReadFile(serialPort, message.data() + total_bytes_read, message.size() - total_bytes_read, &bytes_read, NULL)) {
-                                DWORD error = GetLastError();
-                                std::cerr << "ReadFile failed with error " << error << std::endl;
-                                break;
-                            }
-                            total_bytes_read += bytes_read;
-                        }
-
-                        if (total_bytes_read == message.size()) {
-                            std::cout << "Bytes read from serial port: " << total_bytes_read << std::endl;
-                            Accel = (static_cast<uint16_t>(message[10]) << 24) | (static_cast<uint16_t>(message[9]) << 16) | (static_cast<uint16_t>(message[8]) << 8) | static_cast<uint16_t>(message[7]);
-                            std::cout << "Received data: ";
-                            for (DWORD i = 0; i < total_bytes_read; ++i) {
-                                std::cout << std::hex << static_cast<int>(message[i]) << " ";
-                            }
-                            std::cout << std::dec << std::endl;
-                        } else {
-                            std::cerr << "Failed to read complete message" << std::endl;
-                        }
-                    }
-                }
-            }
-        }
-        CloseHandle(serialPort);
-    }
+    Accel = SerialCommu(port_name, dcbSerialParams, timeouts, message);
     return Accel;
 }
 
